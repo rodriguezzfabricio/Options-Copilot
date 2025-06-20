@@ -1,0 +1,43 @@
+# Environment variables
+.env
+backend/.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+backend/*.db
+*.sqlite3
+backend/*.sqlite3
+
+# AI Models cache
+models/
+backend/models/
+transformers_cache/
+backend/transformers_cache/
+.cache/
+backend/.cache/
+
+# Python
+__pycache__/
+backend/__pycache__/
+*.pyc
+backend/*.pyc
+*.pyo
+backend/*.pyo
+*.pyd
+backend/*.pyd
+.Python
+backend/.Python
+venv/
+backend/venv/
+.venv/
+backend/.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
