@@ -9,6 +9,38 @@ from typing import List, Optional
 import io
 from datetime import datetime
 
+import yfinance as yf
+import traceback
+from fastapi import HTTPException
+
+# Fix common yfinance issues
+import requests
+requests.packages.urllib3.disable_warnings()
+
+# ADD THIS SECTION HERE - RIGHT AFTER YOUR IMPORTS
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Configure yfinance to handle rate limiting
+def setup_yfinance_session():
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+    })
+    return session
+
+# Import and fix yfinance
+yf._session = setup_yfinance_session()
+
 # Try to import required packages with error handling
 try:
     import PyPDF2
@@ -27,10 +59,10 @@ except ImportError:
 
 # Import models with relative imports to avoid path issues
 try:
-    from ...models.analysis import (
-        DocumentAnalysis, 
-        SentimentScore,
+    from app.models.analysis import (
+        DocumentAnalysis,
         MarketAnalysis,
+        SentimentScore,
         OptionsRecommendation,
         create_market_analysis
     )
@@ -231,50 +263,73 @@ async def analyze_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
+
+
 @router.post("/analyze/ticker/{ticker}", response_model=MarketAnalysis)
 async def analyze_ticker(ticker: str):
     """
-    Quick market analysis for a ticker with options recommendations
-    
-    This endpoint:
-    1. Gets current market data
-    2. Analyzes recent news sentiment
-    3. Provides AI-driven options recommendation
+    Quick market analysis for a ticker with options recommendations.
+    This endpoint combines robust data fetching with detailed analysis.
     """
     try:
-        # Get stock data
+        print(f"Starting analysis for ticker: {ticker}")
+        
+        # Add delay to avoid rate limiting
+        time.sleep(1) # Wait 1 second before making request
+        
+        # Get stock data with better error handling
         stock = yf.Ticker(ticker.upper())
         
-        # Get stock info with error handling
+        # --- Robust Data Fetching (from Code 2) ---
+        current_price = None
+        info = None
+        
+        # Method 1: Try historical data first for the price (often more reliable)
         try:
-            info = stock.info
+            print("Trying historical data for price...")
+            hist = stock.history(period="2d")
+            if not hist.empty:
+                current_price = float(hist['Close'].iloc[-1])
+                print(f"Got price from history: {current_price}")
         except Exception as e:
-            print(f"Error getting stock info: {e}")
-            raise HTTPException(status_code=404, detail=f"Could not retrieve data for ticker {ticker}")
+            print(f"Historical data failed: {e}")
         
-        # Get current price
-        current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
-        if current_price == 0:
-            # Try to get from history
-            try:
-                hist = stock.history(period="1d")
-                if not hist.empty:
-                    current_price = hist['Close'].iloc[-1]
-            except:
-                pass
-        
-        if current_price == 0:
-            raise HTTPException(status_code=404, detail=f"Ticker {ticker} not found or no price data available")
-        
-        # Get recent news (with error handling)
+        # Method 2: Try stock.info for price and other details
+        try:
+            print("Trying stock.info...")
+            time.sleep(1) # Extra delay before this more intensive call
+            info = stock.info
+            if current_price is None: # Only use info's price if history failed
+                current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+                print(f"Got price from info: {current_price}")
+        except Exception as e:
+            print(f"Stock info failed: {e}")
+
+        # Final check for price
+        if current_price is None or current_price == 0:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Could not retrieve price data for {ticker}. This might be due to rate limiting or invalid ticker."
+            )
+            
+        # If info wasn't fetched successfully before, we can't do deep analysis
+        if not info:
+             raise HTTPException(
+                status_code=503, 
+                detail=f"Could get price for {ticker}, but failed to get detailed info for full analysis."
+            )
+
+        # --- Complex Analysis Logic (from Code 1) ---
+
+        # 1. Get recent news (with its own error handling to not crash the whole process)
         news = []
         try:
             if hasattr(stock, 'news'):
-                news = stock.news[:3]
+                news = stock.news[:3] # Get top 3 articles
         except Exception as e:
-            print(f"Error getting news: {e}")
-        
-        # Analyze news sentiment (with error handling)
+            print(f"Could not retrieve news: {e}") # Log the error but continue
+
+        # 2. Analyze news sentiment
         sentiment_scores = []
         sentiment_analyzer = get_sentiment_analyzer()
         
@@ -293,29 +348,28 @@ async def analyze_ticker(ticker: str):
                             )
                         )
                 except Exception as e:
-                    print(f"Error analyzing news sentiment: {e}")
+                    print(f"Error analyzing a news sentiment: {e}")
                     continue
         
-        # Calculate average sentiment
+        # 3. Calculate average sentiment
         avg_sentiment = sum(s.score for s in sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
         
-        # Simple recommendation logic based on sentiment and PE ratio
-        pe_ratio = info.get('trailingPE', 20)
+        # 4. Use complex recommendation logic based on sentiment and PE ratio
+        pe_ratio = info.get('trailingPE', 20) # Default to 20 if PE is not available
         
+        recommendation = OptionsRecommendation.HOLD # Default recommendation
         if avg_sentiment > 0.3 and pe_ratio < 25:
             recommendation = OptionsRecommendation.BUY
         elif avg_sentiment < -0.3 or pe_ratio > 40:
             recommendation = OptionsRecommendation.SELL
         elif abs(avg_sentiment) < 0.1:
             recommendation = OptionsRecommendation.IRON_CONDOR
-        else:
-            recommendation = OptionsRecommendation.HOLD
         
-        # Get support/resistance (simplified - using 52 week high/low)
+        # 5. Get support/resistance from 52-week high/low
         support_levels = [info.get('fiftyTwoWeekLow', current_price * 0.9)]
         resistance_levels = [info.get('fiftyTwoWeekHigh', current_price * 1.1)]
         
-        # Key insights
+        # 6. Generate key insights based on data
         insights = []
         if avg_sentiment > 0.2:
             insights.append("Positive news sentiment detected")
@@ -323,32 +377,31 @@ async def analyze_ticker(ticker: str):
             insights.append(f"Attractive valuation with P/E of {pe_ratio:.1f}")
         if current_price < info.get('fiftyDayAverage', current_price):
             insights.append("Trading below 50-day moving average")
-        
         if not insights:
             insights.append(f"Current price: ${current_price:.2f}")
-        
-        # Create analysis
+
+        # --- Create Final Response ---
         analysis = create_market_analysis(
             symbol=ticker.upper(),
             current_price=current_price,
             recommendation=recommendation,
-            confidence_score=0.7
+            confidence_score=0.75 # Higher confidence due to more data points
         )
         
-        # Add additional data
         analysis.sentiment_scores = sentiment_scores
         analysis.support_levels = support_levels
         analysis.resistance_levels = resistance_levels
         analysis.key_insights = insights[:3]
-        analysis.data_sources_used = ["yahoo_finance", "news_sentiment"]
+        analysis.data_sources_used = ["yahoo_finance", "news_sentiment"] if news else ["yahoo_finance"]
         
         return analysis
         
     except HTTPException:
-        raise
+        raise # Re-raise HTTPException so FastAPI handles it
     except Exception as e:
-        print(f"Detailed error in analyze_ticker: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error analyzing ticker: {str(e)}")
+        print(f"Critical error in analyze_ticker: {str(e)}")
+        print(f"Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while analyzing ticker: {str(e)}")
 
 @router.post("/qa/document")
 async def question_answer(
