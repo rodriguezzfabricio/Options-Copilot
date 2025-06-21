@@ -1,6 +1,6 @@
 # OptionsAI Copilot Production Setup
 
-## 🚀 Quick Start (5 minutes)
+## Quick Start (5 minutes)
 
 ### 1. Install Redis (Required)
 ```bash
@@ -71,19 +71,19 @@ Open: http://localhost:8000/docs
 
 Test endpoint: `POST /api/v1/analysis/analyze/ticker/AAPL`
 
-## 🔑 API Keys You Need
+## API Keys You Need
 
 | Service | Required | Free Tier | Sign Up |
 |---------|----------|-----------|---------|
-| Redis | ✅ Required | Free (self-hosted) | N/A |
-| PostgreSQL | ✅ Required | Free (self-hosted) | N/A |
-| Alpha Vantage | ⭐ Recommended | 25 req/day | [Sign up](https://www.alphavantage.co/support/#api-key) |
-| Polygon.io | 🚀 Professional | 5 req/min | [Sign up](https://polygon.io/) |
-| Finnhub | 🔄 Alternative | 60 req/min | [Sign up](https://finnhub.io/) |
-| News API | 🔄 Optional | 1000 req/month | [Sign up](https://newsapi.org/) |
-| HuggingFace | 🤖 Optional | Free tier | [Sign up](https://huggingface.co/) |
+| Redis | Required | Free (self-hosted) | N/A |
+| PostgreSQL | Required | Free (self-hosted) | N/A |
+| Alpha Vantage | Recommended | 25 req/day | [Sign up](https://www.alphavantage.co/support/#api-key) |
+| Polygon.io | Professional | 5 req/min | [Sign up](https://polygon.io/) |
+| Finnhub | Alternative | 60 req/min | [Sign up](https://finnhub.io/) |
+| News API | Optional | 1000 req/month | [Sign up](https://newsapi.org/) |
+| HuggingFace | Optional | Free tier | [Sign up](https://huggingface.co/) |
 
-## ⚡ Production Deployment Options
+## Production Deployment Options
 
 ### Option 1: Docker (Recommended)
 ```bash
@@ -101,7 +101,7 @@ docker-compose up -d
 - PostgreSQL: Local installation  
 - App: Local Python environment
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### Redis Connection Issues
 ```bash
@@ -128,7 +128,7 @@ createdb optionsai_db
 - Check free tier limits haven't been exceeded
 - Test API keys manually with curl
 
-## 📊 Performance Expectations
+## Performance Expectations
 
 With proper setup:
 - **Response Time**: < 500ms for cached results
@@ -136,7 +136,7 @@ With proper setup:
 - **Reliability**: 99.9% uptime with fallback APIs
 - **Scalability**: Horizontal scaling with Redis cluster
 
-## 🎯 Next Steps
+## Next Steps
 
 1. Get at least Alpha Vantage API key (free)
 2. Install Redis and PostgreSQL  
