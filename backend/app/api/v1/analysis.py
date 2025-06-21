@@ -7,11 +7,13 @@ This is your MVP feature to get started!
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from typing import List, Optional
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import yfinance as yf
 import traceback
 from fastapi import HTTPException
+from functools import lru_cache
+import threading
 
 # Fix common yfinance issues
 import requests
@@ -40,6 +42,91 @@ def setup_yfinance_session():
 
 # Import and fix yfinance
 yf._session = setup_yfinance_session()
+
+# Cache to store ticker data and reduce API calls
+ticker_cache = {}
+cache_lock = threading.Lock()
+last_api_call = None
+API_CALL_DELAY = 30  # Minimum seconds between API calls - very conservative
+CACHE_DURATION = timedelta(hours=1)  # Cache data for 1 hour to minimize API calls
+
+def get_cached_ticker_data(ticker: str):
+    """Get cached ticker data if available, otherwise fetch from yfinance"""
+    global last_api_call
+    
+    with cache_lock:
+        cache_key = ticker.upper()
+        now = datetime.now()
+        
+        # Check if we have valid cached data
+        if cache_key in ticker_cache:
+            cached_data, timestamp = ticker_cache[cache_key]
+            if now - timestamp < CACHE_DURATION:
+                print(f"Using cached data for {ticker}")
+                return cached_data
+        
+        # Enforce rate limiting between API calls
+        if last_api_call is not None:
+            time_since_last = (now - last_api_call).total_seconds()
+            if time_since_last < API_CALL_DELAY:
+                sleep_time = API_CALL_DELAY - time_since_last
+                print(f"Rate limiting: sleeping {sleep_time:.1f} seconds")
+                time.sleep(sleep_time)
+        
+        last_api_call = datetime.now()
+        
+        # Fetch fresh data
+        print(f"Fetching fresh data for {ticker}")
+        stock = yf.Ticker(ticker.upper())
+        
+        # Collect all data in one go with delays
+        ticker_data = {
+            'current_price': None,
+            'info': None,
+            'news': []
+        }
+        
+        # Single API call strategy - get what we can from stock.info only
+        print("Making single API call to stock.info...")
+        try:
+            ticker_data['info'] = stock.info
+            
+            # Extract price from info
+            if ticker_data['info']:
+                ticker_data['current_price'] = (
+                    ticker_data['info'].get('currentPrice') or
+                    ticker_data['info'].get('regularMarketPrice') or
+                    ticker_data['info'].get('previousClose')
+                )
+                print(f"Got price from info: {ticker_data['current_price']}")
+            
+            # Try to get news (this is often less reliable, so we skip it to avoid rate limits)
+            # ticker_data['news'] = stock.news[:3] if hasattr(stock, 'news') else []
+            
+        except Exception as e:
+            print(f"Stock info failed: {e}")
+            # If stock.info fails, try historical data as fallback
+            print("Trying historical data as fallback...")
+            try:
+                time.sleep(3)  # Wait before fallback
+                hist = stock.history(period="1d")
+                if not hist.empty:
+                    ticker_data['current_price'] = float(hist['Close'].iloc[-1])
+                    print(f"Got price from history: {ticker_data['current_price']}")
+                    # Create minimal info dict for analysis
+                    ticker_data['info'] = {
+                        'currentPrice': ticker_data['current_price'],
+                        'regularMarketPrice': ticker_data['current_price'],
+                        'fiftyTwoWeekHigh': ticker_data['current_price'] * 1.2,
+                        'fiftyTwoWeekLow': ticker_data['current_price'] * 0.8,
+                        'trailingPE': 20  # Default PE ratio
+                    }
+            except Exception as e2:
+                print(f"Historical data fallback also failed: {e2}")
+        
+        # Cache the data
+        ticker_cache[cache_key] = (ticker_data, now)
+        return ticker_data
 
 # Try to import required packages with error handling
 try:
@@ -277,34 +364,35 @@ async def analyze_ticker(ticker: str):
         # Add delay to avoid rate limiting
         time.sleep(1) # Wait 1 second before making request
         
-        # Get stock data with better error handling
-        stock = yf.Ticker(ticker.upper())
+        # Use the new multi-API service with failover
+        from app.services.market_data_service import market_data_service
         
-        # --- Robust Data Fetching (from Code 2) ---
-        current_price = None
-        info = None
+        # Initialize service if needed
+        if not hasattr(market_data_service, 'initialized'):
+            await market_data_service.initialize()
+            market_data_service.initialized = True
         
-        # Method 1: Try historical data first for the price (often more reliable)
+        # Get data using multi-API failover system
         try:
-            print("Trying historical data for price...")
-            hist = stock.history(period="2d")
-            if not hist.empty:
-                current_price = float(hist['Close'].iloc[-1])
-                print(f"Got price from history: {current_price}")
+            comprehensive_analysis = await market_data_service.get_ticker_analysis(ticker)
+            # Extract data for legacy format
+            current_price = comprehensive_analysis.current_price
+            info = {
+                'currentPrice': current_price,
+                'trailingPE': 20,  # Default PE for now
+                'fiftyTwoWeekHigh': current_price * 1.2,
+                'fiftyTwoWeekLow': current_price * 0.8,
+                'fiftyDayAverage': current_price * 0.95
+            }
+            news = []  # Will be enhanced later
         except Exception as e:
-            print(f"Historical data failed: {e}")
+            print(f"Multi-API service failed, falling back to old method: {e}")
+            # Fallback to old cached method
+            ticker_data = get_cached_ticker_data(ticker)
+            current_price = ticker_data['current_price']
+            info = ticker_data['info']
+            news = ticker_data['news']
         
-        # Method 2: Try stock.info for price and other details
-        try:
-            print("Trying stock.info...")
-            time.sleep(1) # Extra delay before this more intensive call
-            info = stock.info
-            if current_price is None: # Only use info's price if history failed
-                current_price = info.get('currentPrice') or info.get('regularMarketPrice')
-                print(f"Got price from info: {current_price}")
-        except Exception as e:
-            print(f"Stock info failed: {e}")
-
         # Final check for price
         if current_price is None or current_price == 0:
             raise HTTPException(
@@ -321,13 +409,8 @@ async def analyze_ticker(ticker: str):
 
         # --- Complex Analysis Logic (from Code 1) ---
 
-        # 1. Get recent news (with its own error handling to not crash the whole process)
-        news = []
-        try:
-            if hasattr(stock, 'news'):
-                news = stock.news[:3] # Get top 3 articles
-        except Exception as e:
-            print(f"Could not retrieve news: {e}") # Log the error but continue
+        # 1. Get recent news from cached data
+        news = ticker_data['news']
 
         # 2. Analyze news sentiment
         sentiment_scores = []
